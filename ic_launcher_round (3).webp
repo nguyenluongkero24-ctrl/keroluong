@@ -1,0 +1,14 @@
+package com.example.data.model
+
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+
+@Entity(tableName = "work_entries")
+data class WorkEntry(
+    @PrimaryKey val dateString: String,      // Format yyyy-MM-dd
+    val workContent: String = "",
+    val startTime: String = "",              // e.g. "09:00"
+    val endTime: String = "",                // e.g. "18:00"
+    val overtimeHours: Double = 0.0,         // Overtime hours in decimal
+    val isOffDay: Boolean = false            // True if user is absent / off work
+)

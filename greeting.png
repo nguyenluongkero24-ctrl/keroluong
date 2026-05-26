@@ -1,0 +1,1917 @@
+package com.example.ui.screen
+
+import androidx.compose.animation.*
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import com.example.data.model.SalarySettings
+import com.example.data.model.WorkEntry
+import com.example.ui.viewmodel.CalendarDay
+import com.example.ui.viewmodel.SalaryViewModel
+import java.text.DecimalFormat
+import java.text.SimpleDateFormat
+import java.util.*
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MainSalaryApp(viewModel: SalaryViewModel) {
+    // Collect settings and month data
+    val settings by viewModel.salarySettings.collectAsStateWithLifecycle()
+    val monthEntries by viewModel.currentMonthEntries.collectAsStateWithLifecycle()
+    val selectedMonth by viewModel.calendarMonthStr.collectAsStateWithLifecycle()
+    val selectedDateStr by viewModel.selectedDateStr.collectAsStateWithLifecycle()
+
+    // Monthly override attendance bonus list
+    val allOverrides by viewModel.allMonthlyOverrides.collectAsStateWithLifecycle()
+    
+    // Compute current month effective attendance bonus
+    val monthlyOverride = remember(allOverrides, selectedMonth) {
+        allOverrides.find { it.monthStr == selectedMonth }
+    }
+    val effectiveAttendanceBonus = remember(monthlyOverride, settings) {
+        monthlyOverride?.overriddenAttendanceBonus ?: settings.attendanceBonus
+    }
+
+    // Step 1: Calculate monthly fixed salary (S = baseSalary + effectiveAttendanceBonus)
+    val S = remember(settings, effectiveAttendanceBonus) {
+        settings.baseSalary + effectiveAttendanceBonus
+    }
+
+    // Step 2: Calculate average monthly work hours (A = (totalWorkDaysYear * standardHoursDay) / 12)
+    val A = remember(settings) {
+        (settings.totalWorkDaysYear * settings.standardHoursDay) / 12.0
+    }
+
+    // Step 3: Calculate basic hourly wage (B = S / A)
+    val B = remember(S, A) {
+        if (A > 0.0) S / A else 0.0
+    }
+
+    // Step 4: Calculate hourly overtime rate (C = B * 1.25)
+    val C = remember(B) {
+        B * 1.25
+    }
+
+    // Overtime hours and earnings calculations
+    val totalOtHours = remember(monthEntries) {
+        monthEntries.sumOf { it.overtimeHours }
+    }
+    val otEarnings = remember(totalOtHours, C) {
+        totalOtHours * C
+    }
+
+    // Total estimated earnings (base + effective bonus + overtime)
+    val totalEstimatedSalary = remember(settings, effectiveAttendanceBonus, otEarnings) {
+        settings.baseSalary + effectiveAttendanceBonus + otEarnings
+    }
+
+    // Navigation state
+    var activeTab by remember { mutableStateOf(0) }
+
+    // Number format helper
+    val moneyFormatter = remember { DecimalFormat("#,###") }
+    fun formatMoneyValue(value: Double): String {
+        return moneyFormatter.format(value)
+    }
+
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = {
+                    Text(
+                        text = "Lịch & Tính Lương",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ),
+                modifier = Modifier.shadow(4.dp)
+            )
+        },
+        bottomBar = {
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                tonalElevation = 8.dp
+            ) {
+                NavigationBarItem(
+                    selected = activeTab == 0,
+                    onClick = { activeTab = 0 },
+                    icon = { Icon(Icons.Default.DateRange, contentDescription = "Lịch") },
+                    label = { Text("Lịch") },
+                    modifier = Modifier.testTag("nav_calendar_tab")
+                )
+                NavigationBarItem(
+                    selected = activeTab == 1,
+                    onClick = { activeTab = 1 },
+                    icon = { Icon(Icons.Default.Info, contentDescription = "Báo Cáo") },
+                    label = { Text("Báo Cáo") },
+                    modifier = Modifier.testTag("nav_report_tab")
+                )
+                NavigationBarItem(
+                    selected = activeTab == 2,
+                    onClick = { activeTab = 2 },
+                    icon = { Icon(Icons.Default.Settings, contentDescription = "Cài Đặt") },
+                    label = { Text("Cài Đặt") },
+                    modifier = Modifier.testTag("nav_settings_tab")
+                )
+            }
+        }
+    ) { innerPadding ->
+        // Animated transition between screens/tabs
+        AnimatedContent(
+            targetState = activeTab,
+            modifier = Modifier
+                .padding(innerPadding)
+                .fillMaxSize(),
+            transitionSpec = {
+                fadeIn() togetherWith fadeOut()
+            },
+            label = "tab_transitions"
+        ) { tabIndex ->
+            when (tabIndex) {
+                0 -> CalendarTabScreen(
+                    viewModel = viewModel,
+                    selectedDateStr = selectedDateStr,
+                    selectedMonth = selectedMonth,
+                    monthEntries = monthEntries,
+                    settings = settings,
+                    formatMoney = ::formatMoneyValue
+                )
+                1 -> ReportTabScreen(
+                    viewModel = viewModel,
+                    monthEntries = monthEntries,
+                    settings = settings,
+                    selectedMonth = selectedMonth,
+                    effectiveAttendanceBonus = effectiveAttendanceBonus,
+                    S = S,
+                    A = A,
+                    B = B,
+                    C = C,
+                    totalOtHours = totalOtHours,
+                    otEarnings = otEarnings,
+                    totalEstimatedSalary = totalEstimatedSalary,
+                    formatMoney = ::formatMoneyValue
+                )
+                2 -> SettingsTabScreen(
+                    viewModel = viewModel,
+                    S = S,
+                    A = A,
+                    B = B,
+                    C = C,
+                    formatMoney = ::formatMoneyValue
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun CalendarTabScreen(
+    viewModel: SalaryViewModel,
+    selectedDateStr: String,
+    selectedMonth: String,
+    monthEntries: List<WorkEntry>,
+    settings: SalarySettings,
+    formatMoney: (Double) -> String
+) {
+    val focusManager = LocalFocusManager.current
+    val gridDays = viewModel.getCalendarGridData()
+
+    // Map month logged data by date to display status dots/markers on the calendar days
+    val loggedDaysMap = remember(monthEntries) {
+        monthEntries.associateBy { it.dateString }
+    }
+
+    // Convert Month String "yyyy-MM" to readable display "Tháng MM, yyyy"
+    val displayMonth = remember(selectedMonth) {
+        try {
+            val parser = SimpleDateFormat("yyyy-MM", Locale.getDefault())
+            val formatter = SimpleDateFormat("Tháng MM / yyyy", Locale.getDefault())
+            val date = parser.parse(selectedMonth)
+            date?.let { formatter.format(it) } ?: selectedMonth
+        } catch (e: Exception) {
+            selectedMonth
+        }
+    }
+
+    // State for Custom Wheel Picker Dialogs
+    var showStartWheelPicker by remember { mutableStateOf(false) }
+    var showEndWheelPicker by remember { mutableStateOf(false) }
+    var showOvertimeWheelPicker by remember { mutableStateOf(false) }
+
+    if (showStartWheelPicker) {
+        TimeWheelPickerDialog(
+            initialTime = viewModel.editStartTime.ifEmpty { "08:00" },
+            onDismissRequest = { showStartWheelPicker = false },
+            onTimeSelected = { time ->
+                viewModel.updateStartTime(time)
+                showStartWheelPicker = false
+            }
+        )
+    }
+
+    if (showEndWheelPicker) {
+        TimeWheelPickerDialog(
+            initialTime = viewModel.editEndTime.ifEmpty { "17:00" },
+            onDismissRequest = { showEndWheelPicker = false },
+            onTimeSelected = { time ->
+                viewModel.updateEndTime(time)
+                showEndWheelPicker = false
+            }
+        )
+    }
+
+    if (showOvertimeWheelPicker) {
+        val currentOt = viewModel.editOvertimeHours.toDoubleOrNull() ?: 0.0
+        OvertimeWheelPickerDialog(
+            initialValue = currentOt,
+            onDismissRequest = { showOvertimeWheelPicker = false },
+            onOvertimeSelected = { otVal ->
+                viewModel.updateOvertimeHours(if (otVal == 0.0) "" else otVal.toString())
+                showOvertimeWheelPicker = false
+            }
+        )
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // 1. Month Navigator Header
+        item {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                ),
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = { viewModel.previousMonth() },
+                        modifier = Modifier.testTag("prev_month_btn")
+                    ) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Tháng trước")
+                    }
+
+                    Text(
+                        text = displayMonth,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    IconButton(
+                        onClick = { viewModel.nextMonth() },
+                        modifier = Modifier.testTag("next_month_btn")
+                    ) {
+                        Icon(Icons.Default.ArrowForward, contentDescription = "Tháng sau")
+                    }
+                }
+            }
+        }
+
+        // 2. Beautiful Monthly Grid Calendar
+        item {
+            Card(
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    // Days of Week Header
+                    val daysOfWeek = listOf("T2", "T3", "T4", "T5", "T6", "T7", "CN")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceAround
+                    ) {
+                        daysOfWeek.forEachIndexed { idx, day ->
+                            val textColor = if (idx == 6) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                            Text(
+                                text = day,
+                                modifier = Modifier.weight(1f),
+                                textAlign = TextAlign.Center,
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                color = textColor
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Calendar Days Grid
+                    val gridHeight = if (gridDays.size > 35) 280.dp else 240.dp
+                    Box(modifier = Modifier.height(gridHeight)) {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(7),
+                            userScrollEnabled = false,
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            items(gridDays) { day ->
+                                if (day.dayNumber == 0) {
+                                    Box(modifier = Modifier.aspectRatio(1f)) // Empty spacer
+                                } else {
+                                    val isSelected = day.dateString == selectedDateStr
+                                    val hasData = loggedDaysMap.containsKey(day.dateString)
+                                    val entry = loggedDaysMap[day.dateString]
+                                    val isOffDay = entry?.isOffDay == true
+                                    val overtimeCount = entry?.overtimeHours ?: 0.0
+
+                                    Box(
+                                        modifier = Modifier
+                                            .aspectRatio(1f)
+                                            .padding(2.dp)
+                                            .then(
+                                                if (isSelected) {
+                                                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp))
+                                                } else {
+                                                    Modifier
+                                                }
+                                            )
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(
+                                                when {
+                                                    hasData && isOffDay -> Color(0xFFEF5350) // Red for off days
+                                                    isSelected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)
+                                                    hasData && overtimeCount > 0f -> MaterialTheme.colorScheme.primaryContainer
+                                                    hasData -> MaterialTheme.colorScheme.secondaryContainer
+                                                    else -> Color.Transparent
+                                                }
+                                            )
+                                            .clickable {
+                                                viewModel.selectDate(day.dateString)
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text(
+                                                text = day.dayNumber.toString(),
+                                                style = MaterialTheme.typography.bodyMedium.copy(
+                                                    fontWeight = if (isSelected || hasData) FontWeight.Bold else FontWeight.Normal
+                                                ),
+                                                color = when {
+                                                    hasData && isOffDay -> Color.White
+                                                    isSelected -> MaterialTheme.colorScheme.onPrimary
+                                                    hasData && overtimeCount > 0f -> MaterialTheme.colorScheme.onPrimaryContainer
+                                                    hasData -> MaterialTheme.colorScheme.onSecondaryContainer
+                                                    else -> MaterialTheme.colorScheme.onSurface
+                                                }
+                                            )
+                                            
+                                            // Tiny indicator for overtime hours
+                                            if (hasData && isOffDay) {
+                                                // No extra dot needed as cell is completely Red
+                                            } else if (hasData && overtimeCount > 0.0) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(5.dp)
+                                                        .clip(CircleShape)
+                                                        .background(
+                                                            if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary
+                                                        )
+                                                )
+                                            } else if (hasData) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(5.dp)
+                                                        .clip(CircleShape)
+                                                        .background(
+                                                            if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.outline
+                                                        )
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Daily Logging Interface Form (No Save Button - Auto Saved on-change!)
+        item {
+            val dateLabel = remember(selectedDateStr) {
+                try {
+                    val parser = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+                    val formatter = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
+                    val parsed = parser.parse(selectedDateStr)
+                    parsed?.let { formatter.format(it) } ?: selectedDateStr
+                } catch (e: Exception) {
+                    selectedDateStr
+                }
+            }
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("day_log_card"),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Ghi chép ngày $dateLabel",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF4CAF50))
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                "Tự động lưu",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = Color(0xFF4CAF50)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Content details input
+                    OutlinedTextField(
+                        value = viewModel.editWorkContent,
+                        onValueChange = { viewModel.updateWorkContent(it) }, // Auto-saved
+                        label = { Text("Nội dung công việc") },
+                        placeholder = { Text("Nhập công việc hôm nay...") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("input_work_content"),
+                        maxLines = 2,
+                        shape = RoundedCornerShape(10.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Off day selector Row per User Request
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                if (viewModel.editIsOffDay) Color(0xFFFFEBEE) // Light red background when checked
+                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                            )
+                            .clickable { viewModel.updateIsOffDay(!viewModel.editIsOffDay) }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Nghỉ làm",
+                                tint = if (viewModel.editIsOffDay) Color(0xFFE53935) else MaterialTheme.colorScheme.outline
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Nghỉ làm (bôi đỏ ngày này)",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                color = if (viewModel.editIsOffDay) Color(0xFFD32F2F) else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        Switch(
+                            checked = viewModel.editIsOffDay,
+                            onCheckedChange = { viewModel.updateIsOffDay(it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = Color(0xFFEF5350),
+                                uncheckedThumbColor = MaterialTheme.colorScheme.outline,
+                                uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Display Start, End and Overtime Selection Triggers using Wheels!
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Start time trigger
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surface)
+                                .clickable { showStartWheelPicker = true }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text("Bắt đầu", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                    Text(
+                                        text = viewModel.editStartTime.ifEmpty { "Chọn giờ" },
+                                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+                                        color = if (viewModel.editStartTime.isEmpty()) Color.LightGray else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                                Icon(Icons.Default.PlayArrow, contentDescription = "Bắt đầu", tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+
+                        // End time trigger
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surface)
+                                .clickable { showEndWheelPicker = true }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text("Kết thúc", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                    Text(
+                                        text = viewModel.editEndTime.ifEmpty { "Chọn giờ" },
+                                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+                                        color = if (viewModel.editEndTime.isEmpty()) Color.LightGray else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                                Icon(Icons.Default.Check, contentDescription = "Kết thúc", tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Dedicated Overtime trigger (using vertical slide Wheel Picker!)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                            .clickable { showOvertimeWheelPicker = true }
+                            .padding(horizontal = 12.dp, vertical = 12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Star, contentDescription = "Tăng ca", tint = MaterialTheme.colorScheme.primary)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("Số giờ làm thêm / Tăng ca", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                    Text(
+                                        text = if (viewModel.editOvertimeHours.isEmpty()) "Chọn số tiếng tăng ca" 
+                                               else "${viewModel.editOvertimeHours} tiếng",
+                                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+                                        color = if (viewModel.editOvertimeHours.isEmpty()) Color.LightGray else MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = "Mở khóa chọn", tint = MaterialTheme.colorScheme.outline)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Only Delete / Clear Button is left since information auto-saves instantly!
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.clearOrDeleteWorkEntry()
+                            focusManager.clearFocus()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                            .testTag("clear_day_btn"),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = "Xóa")
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Xóa trắng ngày này", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ReportTabScreen(
+    viewModel: SalaryViewModel,
+    monthEntries: List<WorkEntry>,
+    settings: SalarySettings,
+    selectedMonth: String,
+    effectiveAttendanceBonus: Double,
+    S: Double,
+    A: Double,
+    B: Double,
+    C: Double,
+    totalOtHours: Double,
+    otEarnings: Double,
+    totalEstimatedSalary: Double,
+    formatMoney: (Double) -> String
+) {
+    val displayMonth = remember(selectedMonth) {
+        try {
+            val parser = SimpleDateFormat("yyyy-MM", Locale.getDefault())
+            val formatter = SimpleDateFormat("Tháng MM / yyyy", Locale.getDefault())
+            val date = parser.parse(selectedMonth)
+            date?.let { formatter.format(it) } ?: selectedMonth
+        } catch (e: Exception) {
+            selectedMonth
+        }
+    }
+
+    // State for Overriding Attendance Bonus for this selected month!
+    var showEditAttendanceDialog by remember { mutableStateOf(false) }
+
+    if (showEditAttendanceDialog) {
+        EditAttendanceBonusDialog(
+            initialAmount = effectiveAttendanceBonus,
+            onDismissRequest = { showEditAttendanceDialog = false },
+            onSaveAmount = { newAmt ->
+                viewModel.updateMonthlyAttendanceBonusOverride(selectedMonth, newAmt)
+                showEditAttendanceDialog = false
+            }
+        )
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Broad Summary Display
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .shadow(4.dp, RoundedCornerShape(16.dp)),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Thu nhập dự kiến $displayMonth",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "¥ ${formatMoney(totalEstimatedSalary)}",
+                        fontWeight = FontWeight.Black,
+                        style = MaterialTheme.typography.headlineLarge,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.testTag("expected_salary_text")
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    SuggestionChip(
+                        onClick = {},
+                        label = {
+                            Text(
+                                "Tăng ca tháng này: ${if (totalOtHours % 1.0 == 0.0) totalOtHours.toInt().toString() else totalOtHours.toString()} giờ",
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        },
+                        colors = SuggestionChipDefaults.suggestionChipColors(
+                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                            labelColor = MaterialTheme.colorScheme.primary
+                        )
+                    )
+                }
+            }
+        }
+
+        // AUTO-CALCULATED PARAMETERS TRANSPARENCY (User Request 5: Hiển thị minh bạch ba con số sau tính toán)
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.1f)),
+                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Định mức tính lương tự động",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Metric 1: Average Monthly Work Hours
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("1. Giờ làm việc TB/tháng (A):", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                        Text(
+                            text = "${String.format(Locale.getDefault(), "%.2f", A)} giờ",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Metric 2: Basic Hourly Rate
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("2. Lương cơ bản/giờ (B):", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                        Text(
+                            text = "¥ ${formatMoney(B)} / giờ",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Metric 3: Overtime Hourly Rate
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("3. Tiền tăng ca/giờ (C):", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                        Text(
+                            text = "¥ ${formatMoney(C)} / giờ",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+        }
+
+        // Calculation Breakdown Details Line-by-Line as required
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Chi tiết tính toán thu nhập",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Base Salary Line
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.secondaryContainer),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Star,
+                                    contentDescription = "Lương cứng",
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text("Lương cứng gốc", fontWeight = FontWeight.Bold)
+                                Text("Cố định hàng tháng", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                            }
+                        }
+                        Text(
+                            text = "¥ ${formatMoney(settings.baseSalary)}",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+                    // Attendance Bonus Line (CLICKABLE FOR MONTHLY OVERRIDE as requested! user can click to change and trigger real-time recalculation of B and C)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { showEditAttendanceDialog = true }
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.tertiaryContainer),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = "Chuyên cần",
+                                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Tiền chuyên cần", fontWeight = FontWeight.Bold)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Icon(Icons.Default.Edit, contentDescription = "Sửa đổi chuyên cần", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
+                                }
+                                Text(
+                                    text = if (effectiveAttendanceBonus != settings.attendanceBonus) "Đã ghi đè tháng này (Chạm để sửa)"
+                                           else "Mặc định (Chạm để ghi đè)",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = if (effectiveAttendanceBonus != settings.attendanceBonus) MaterialTheme.colorScheme.primary else Color.Gray,
+                                        fontWeight = if (effectiveAttendanceBonus != settings.attendanceBonus) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                )
+                            }
+                        }
+                        Text(
+                            text = "¥ ${formatMoney(effectiveAttendanceBonus)}",
+                            fontWeight = FontWeight.Bold,
+                            color = if (effectiveAttendanceBonus != settings.attendanceBonus) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+                    // Overtime calculations line
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.primaryContainer),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.DateRange,
+                                    contentDescription = "Làm thêm",
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text("Tiền làm thêm (Tăng ca)", fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = "${if (totalOtHours % 1.0 == 0.0) totalOtHours.toInt().toString() else totalOtHours.toString()} giờ × ¥ ${formatMoney(C)} / giờ",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                        Text(
+                            text = "¥ ${formatMoney(otEarnings)}",
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+                    // Formula view
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                            .padding(12.dp)
+                    ) {
+                        Column {
+                            Text(
+                                "Công thức tính từ định mức:",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "Lương = Lương cứng (¥ ${formatMoney(settings.baseSalary)}) + Chuyên cần tháng (¥ ${formatMoney(effectiveAttendanceBonus)}) + [Tăng ca (${if (totalOtHours % 1.0 == 0.0) totalOtHours.toInt().toString() else totalOtHours.toString()}h) × Tiền tăng ca/giờ (¥ ${formatMoney(C)})]",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Active entries list list detail
+        item {
+            val validEntries = remember(monthEntries) {
+                monthEntries.filter { it.overtimeHours > 0.0 || it.workContent.isNotEmpty() }
+            }
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Nhật ký làm thêm trong tháng (${validEntries.size} ngày)",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleSmall
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    if (validEntries.isEmpty()) {
+                        Text(
+                            "Chưa có nhật ký làm việc nào được ghi chép trong tháng này.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.Gray,
+                            modifier = Modifier.padding(vertical = 12.dp)
+                        )
+                    } else {
+                        validEntries.forEach { entry ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    val formattedDate = try {
+                                        val parser = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+                                        val formatter = SimpleDateFormat("dd/MM", Locale.getDefault())
+                                        parser.parse(entry.dateString)?.let { formatter.format(it) } ?: entry.dateString
+                                    } catch (e: Exception) {
+                                        entry.dateString
+                                    }
+
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = formattedDate,
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        if (entry.startTime.isNotEmpty() || entry.endTime.isNotEmpty()) {
+                                            Text(
+                                                text = " (${entry.startTime} - ${entry.endTime})",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = Color.Gray
+                                            )
+                                        }
+                                    }
+                                    if (entry.workContent.isNotEmpty()) {
+                                        Text(
+                                            text = entry.workContent,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = "+${entry.overtimeHours} giờ tăng ca",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingsTabScreen(
+    viewModel: SalaryViewModel,
+    S: Double,
+    A: Double,
+    B: Double,
+    C: Double,
+    formatMoney: (Double) -> String
+) {
+    val focusManager = LocalFocusManager.current
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // --- Firebase Account & Cloud Real-time Sync Section ---
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.12f)
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (currentUser != null) Icons.Default.Check else Icons.Default.Info,
+                            contentDescription = "Trạng thái đám mây",
+                            tint = if (currentUser != null) Color(0xFF4CAF50) else MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (currentUser != null) "Đám mây đồng bộ hoạt động" else "Đồng bộ Đám mây (Chưa đăng nhập)",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                            if (currentUser != null) {
+                                Text(
+                                    text = currentUser?.email ?: "Đã tải & đồng bộ thành công",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+                                )
+                                if (viewModel.lastSyncTime != null) {
+                                    Text(
+                                        text = viewModel.lastSyncTime ?: "",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFF4CAF50),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    text = "Đăng nhập để tự động lưu & khôi phục lịch sử chấm công không hao hụt dữ liệu.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+
+                    if (currentUser != null) {
+                        // Logged-in controls
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Button(
+                                onClick = { viewModel.syncData() },
+                                enabled = !viewModel.isSyncing,
+                                modifier = Modifier.weight(1f).testTag("sync_data_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                if (viewModel.isSyncing) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        color = MaterialTheme.colorScheme.onPrimary,
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Đang đồng bộ...", style = MaterialTheme.typography.labelLarge)
+                                } else {
+                                    Icon(Icons.Default.Refresh, contentDescription = "Sync", modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Đồng bộ ngay", style = MaterialTheme.typography.labelLarge)
+                                }
+                            }
+
+                            OutlinedButton(
+                                onClick = { viewModel.signOut() },
+                                modifier = Modifier.weight(1f).testTag("sign_out_button"),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                            ) {
+                                Text("Đăng xuất", style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
+                    } else {
+                        // Authentication widgets
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (viewModel.authErrorMessage != null) {
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = viewModel.authErrorMessage ?: "",
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.padding(8.dp)
+                                    )
+                                }
+                            }
+
+                            var showPassword by remember { mutableStateOf(false) }
+
+                            OutlinedTextField(
+                                value = viewModel.authEmail,
+                                onValueChange = { viewModel.authEmail = it },
+                                label = { Text("Email") },
+                                modifier = Modifier.fillMaxWidth().testTag("auth_email_field"),
+                                leadingIcon = { Icon(Icons.Default.Email, contentDescription = "Email") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
+                            )
+
+                            OutlinedTextField(
+                                value = viewModel.authPassword,
+                                onValueChange = { viewModel.authPassword = it },
+                                label = { Text("Mật khẩu") },
+                                modifier = Modifier.fillMaxWidth().testTag("auth_password_field"),
+                                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = "Mật khẩu") },
+                                trailingIcon = {
+                                    TextButton(onClick = { showPassword = !showPassword }) {
+                                        Text(if (showPassword) "ẨN" else "HIỆN", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                },
+                                visualTransformation = if (showPassword) PasswordVisualTransformation() else PasswordVisualTransformation(),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        if (viewModel.isRegistering) {
+                                            viewModel.signUpWithEmail()
+                                        } else {
+                                            viewModel.loginWithEmail()
+                                        }
+                                    },
+                                    enabled = !viewModel.isAuthLoading,
+                                    modifier = Modifier.weight(1f).testTag("auth_action_button"),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                ) {
+                                    if (viewModel.isAuthLoading) {
+                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
+                                    } else {
+                                        Text(if (viewModel.isRegistering) "Đăng ký" else "Đăng nhập")
+                                    }
+                                }
+
+                                TextButton(
+                                    onClick = { viewModel.isRegistering = !viewModel.isRegistering },
+                                    modifier = Modifier.align(Alignment.CenterVertically).testTag("auth_toggle_button")
+                                ) {
+                                    Text(if (viewModel.isRegistering) "Đã có tài khoản? Đăng nhập" else "Tạo tài khoản mới")
+                                }
+                            }
+
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            )
+
+                            // Google and Demo Sign In Buttons
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            viewModel.loginWithCredentials(
+                                                email = "google-demo@example.com",
+                                                password = "googleDemo123",
+                                                onSuccess = {
+                                                    viewModel.authErrorMessage = null
+                                                },
+                                                onFailure = {
+                                                    viewModel.signUpWithCredentials(
+                                                        email = "google-demo@example.com",
+                                                        password = "googleDemo123",
+                                                        onSuccess = { viewModel.authErrorMessage = null },
+                                                        onFailure = { e -> viewModel.authErrorMessage = e }
+                                                    )
+                                                }
+                                            )
+                                        },
+                                        enabled = !viewModel.isAuthLoading,
+                                        modifier = Modifier.weight(1f).testTag("google_sign_in_button"),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                        ),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Person,
+                                            contentDescription = "Google",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Google Sign-In", style = MaterialTheme.typography.labelLarge)
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = {
+                                            val demoEmail = "demo-user@salaryapp.com"
+                                            viewModel.loginWithCredentials(
+                                                email = demoEmail,
+                                                password = "demoSecure123",
+                                                onSuccess = {
+                                                    viewModel.authErrorMessage = null
+                                                },
+                                                onFailure = {
+                                                    viewModel.signUpWithCredentials(
+                                                        email = demoEmail,
+                                                        password = "demoSecure123",
+                                                        onSuccess = { viewModel.authErrorMessage = null },
+                                                        onFailure = { e -> viewModel.authErrorMessage = e }
+                                                    )
+                                                }
+                                            )
+                                        },
+                                        enabled = !viewModel.isAuthLoading,
+                                        modifier = Modifier.weight(1f).testTag("demo_sign_in_button"),
+                                        colors = ButtonDefaults.outlinedButtonColors(
+                                            contentColor = MaterialTheme.colorScheme.primary
+                                        ),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Star,
+                                            contentDescription = "Test User",
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Tài khoản Demo", style = MaterialTheme.typography.labelLarge)
+                                    }
+                                }
+                                
+                                Text(
+                                    text = "* Google / Demo Sign-In được liên kết để mô phỏng tích hợp trực tuyến đồng bộ tức thời.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Base instructions card
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Info,
+                        contentDescription = "Hướng dẫn",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(32.dp)
+                    )
+                    Column {
+                        Text(
+                            "Thông số tính lương",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            "Hãy nhập các định mức cơ bản của bạn. Mọi thay đổi đều được hệ thống tự động lưu trữ và áp dụng ngay lập tức.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Form fields Card
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Định mức cơ bản",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF4CAF50))
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                "Tự lưu tức thời",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = Color(0xFF4CAF50)
+                            )
+                        }
+                    }
+
+                     // 1. Monthly base salary
+                    OutlinedTextField(
+                        value = viewModel.editBaseSalary,
+                        onValueChange = { viewModel.updateBaseSalary(it) },
+                        label = { Text("Tiền Lương Cứng Hàng Tháng (¥)") },
+                        placeholder = { Text("Ví dụ: 210000") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("settings_base_salary"),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = RoundedCornerShape(10.dp),
+                        singleLine = true,
+                        leadingIcon = { Icon(Icons.Default.Star, contentDescription = "Lương cứng") }
+                    )
+
+                    // 2. Attendance Bonus
+                    OutlinedTextField(
+                        value = viewModel.editAttendanceBonus,
+                        onValueChange = { viewModel.updateAttendanceBonus(it) },
+                        label = { Text("Tiền Chuyên Cần Hàng Tháng (¥)") },
+                        placeholder = { Text("Ví dụ: 20000") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("settings_attendance_bonus"),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = RoundedCornerShape(10.dp),
+                        singleLine = true,
+                        leadingIcon = { Icon(Icons.Default.Check, contentDescription = "Chuyên cần") }
+                    )
+
+                    // 3. New Field: Total Workdays per Year
+                    OutlinedTextField(
+                        value = viewModel.editTotalWorkDaysYear,
+                        onValueChange = { viewModel.updateTotalWorkDaysYear(it) },
+                        label = { Text("Tổng Số Ngày Làm Việc Trong Năm") },
+                        placeholder = { Text("Mặc định: 250") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("settings_total_workdays_year"),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = RoundedCornerShape(10.dp),
+                        singleLine = true,
+                        leadingIcon = { Icon(Icons.Default.DateRange, contentDescription = "Ngày làm việc năm") }
+                    )
+
+                    // 4. New Field: Standard Work hours per day
+                    OutlinedTextField(
+                        value = viewModel.editStandardHoursDay,
+                        onValueChange = { viewModel.updateStandardHoursDay(it) },
+                        label = { Text("Số Giờ Làm Việc Tiêu Chuẩn 1 Ngày") },
+                        placeholder = { Text("Mặc định: 7.75") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("settings_standard_hours_day"),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        shape = RoundedCornerShape(10.dp),
+                        singleLine = true,
+                        leadingIcon = { Icon(Icons.Default.Build, contentDescription = "Giờ làm việc ngày") }
+                    )
+                }
+            }
+        }
+
+        // Real-time Calculative Feedback Indicator
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f)),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "Kết quả định giá theo thiết lập:",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "• Số giờ làm TB/tháng: ${String.format(Locale.getDefault(), "%.2f", A)} giờ",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "• Lương cơ bản mỗi giờ: ¥ ${formatMoney(B)} / giờ",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "• Tiền làm thêm (Tăng ca)/giờ: ¥ ${formatMoney(C)} / giờ",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun <T> VerticalWheelPicker(
+    value: T,
+    options: List<T>,
+    onValueChange: (T) -> Unit,
+    modifier: Modifier = Modifier,
+    displayLabel: (T) -> String = { it.toString() }
+) {
+    val lazyListState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+
+    val currentIndex = remember(value, options) {
+        val idx = options.indexOf(value)
+        if (idx != -1) idx else 0
+    }
+
+    LaunchedEffect(currentIndex) {
+        lazyListState.scrollToItem(currentIndex)
+    }
+
+    var isUserScrolling by remember { mutableStateOf(false) }
+
+    LaunchedEffect(lazyListState.isScrollInProgress) {
+        if (lazyListState.isScrollInProgress) {
+            isUserScrolling = true
+        } else if (isUserScrolling) {
+            isUserScrolling = false
+            val targetIndex = lazyListState.firstVisibleItemIndex
+            if (targetIndex in options.indices && options[targetIndex] != value) {
+                onValueChange(options[targetIndex])
+            }
+        }
+    }
+
+    val snapFlingBehavior = androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior(lazyListState)
+
+    Box(
+        modifier = modifier
+            .height(130.dp)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(12.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        // Highlighting box overlay
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(38.dp)
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
+                .border(BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)))
+        )
+
+        LazyColumn(
+            state = lazyListState,
+            flingBehavior = snapFlingBehavior,
+            contentPadding = PaddingValues(vertical = 46.dp), // For centered alignment
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            items(options.size) { idx ->
+                val option = options[idx]
+                val isSelected = option == value
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(38.dp)
+                        .clickable {
+                            coroutineScope.launch {
+                                lazyListState.animateScrollToItem(idx)
+                                onValueChange(option)
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = displayLabel(option),
+                        style = if (isSelected) {
+                            MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 17.sp
+                            )
+                        } else {
+                            MaterialTheme.typography.bodyMedium.copy(
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                                fontSize = 14.sp
+                            )
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TimeWheelPickerDialog(
+    initialTime: String,
+    onDismissRequest: () -> Unit,
+    onTimeSelected: (String) -> Unit
+) {
+    // Parse starting hours and minutes
+    val parsedHour = remember(initialTime) {
+        if (initialTime.contains(":")) {
+            initialTime.split(":")[0].toIntOrNull() ?: 8
+        } else 8
+    }
+    val parsedMinute = remember(initialTime) {
+        if (initialTime.contains(":")) {
+            val min = initialTime.split(":")[1].toIntOrNull() ?: 0
+            when {
+                min < 8 -> 0
+                min < 23 -> 15
+                min < 38 -> 30
+                min < 53 -> 45
+                else -> 0
+            }
+        } else 0
+    }
+
+    var selectedHour by remember { mutableStateOf(parsedHour) }
+    var selectedMinute by remember { mutableStateOf(parsedMinute) }
+
+    val hourOptions = remember { (0..23).toList() }
+    val minuteOptions = remember { listOf(0, 15, 30, 45) }
+
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = {
+            Text(
+                "Chọn Thời Gian",
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "Hãy trượt để chọn giờ và phút (cách nhau 15 phút)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Hours Wheel Column
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("Giờ", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        VerticalWheelPicker(
+                            value = selectedHour,
+                            options = hourOptions,
+                            onValueChange = { selectedHour = it },
+                            displayLabel = { String.format(Locale.getDefault(), "%02d", it) }
+                        )
+                    }
+
+                    Text(":", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+
+                    // Minutes Wheel Column
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("Phút", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        VerticalWheelPicker(
+                            value = selectedMinute,
+                            options = minuteOptions,
+                            onValueChange = { selectedMinute = it },
+                            displayLabel = { String.format(Locale.getDefault(), "%02d", it) }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val formattedTime = String.format(Locale.getDefault(), "%02d:%02d", selectedHour, selectedMinute)
+                    onTimeSelected(formattedTime)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("Xác nhận", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            OutlinedButton(
+                onClick = onDismissRequest,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("Hủy bỏ")
+            }
+        },
+        shape = RoundedCornerShape(20.dp)
+    )
+}
+
+@Composable
+fun OvertimeWheelPickerDialog(
+    initialValue: Double,
+    onDismissRequest: () -> Unit,
+    onOvertimeSelected: (Double) -> Unit
+) {
+    // Round to nearest 0.5 interval
+    val roundedInitial = remember(initialValue) {
+        val multiplied = Math.round(initialValue * 2.0) / 2.0
+        if (multiplied in 0.0..12.0) multiplied else 0.0
+    }
+    
+    var selectedVal by remember { mutableStateOf(roundedInitial) }
+    
+    // Generate scale 0.0 to 12.0 by 0.5 steps
+    val options = remember {
+        val list = mutableListOf<Double>()
+        var current = 0.0
+        while (current <= 12.0) {
+            list.add(current)
+            current += 0.5
+        }
+        list
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = {
+            Text(
+                "Chọn Giờ Tăng Ca",
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "Hãy trượt để chọn số giờ làm thêm (từ 0 đến 12 tiếng)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+
+                VerticalWheelPicker(
+                    value = selectedVal,
+                    options = options,
+                    onValueChange = { selectedVal = it },
+                    modifier = Modifier.width(160.dp),
+                    displayLabel = {
+                        if (it == 0.0) "0 (Không làm)"
+                        else "${if (it % 1.0 == 0.0) it.toInt().toString() else it.toString()} tiếng"
+                    }
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onOvertimeSelected(selectedVal)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("Xác nhận", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            OutlinedButton(
+                onClick = onDismissRequest,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("Hủy bỏ")
+            }
+        },
+        shape = RoundedCornerShape(20.dp)
+    )
+}
+
+@Composable
+fun EditAttendanceBonusDialog(
+    initialAmount: Double,
+    onDismissRequest: () -> Unit,
+    onSaveAmount: (Double) -> Unit
+) {
+    var rawText by remember { mutableStateOf(if (initialAmount <= 0.0) "" else initialAmount.toInt().toString()) }
+
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = {
+            Text(
+                "Ghi Đè Tiền Chuyên Cần",
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    "Nhập số tiền chuyên cần riêng cho tháng này (nếu bị trừ do nghỉ học/đi trễ).",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.Gray,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+                OutlinedTextField(
+                    value = rawText,
+                    onValueChange = { rawText = it },
+                    label = { Text("Số tiền chuyên cần mới (¥)") },
+                    placeholder = { Text("Ví dụ: 15000") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    shape = RoundedCornerShape(10.dp),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val amount = rawText.toDoubleOrNull() ?: 0.0
+                    onSaveAmount(amount)
+                },
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("Xác nhận", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            OutlinedButton(
+                onClick = onDismissRequest,
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("Hủy")
+            }
+        },
+        shape = RoundedCornerShape(16.dp)
+    )
+}

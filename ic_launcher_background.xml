@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "1007585125987",
+    "project_id": "app-lich-211bb",
+    "storage_bucket": "app-lich-211bb.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1007585125987:android:db982932ad1553965a3a56",
+        "android_client_info": {
+          "package_name": "com.aistudio.lichluong.ptzxcv"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1007585125987-4q9i6chu6imv93a4at1cjbikgs1uhpbv.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAmfMlJyZ5i343zlRrN1CaLEzePV7qyS7Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1007585125987-4q9i6chu6imv93a4at1cjbikgs1uhpbv.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

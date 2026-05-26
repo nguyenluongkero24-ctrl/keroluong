@@ -1,0 +1,13 @@
+package com.example.data.model
+
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+
+@Entity(tableName = "salary_settings")
+data class SalarySettings(
+    @PrimaryKey val id: Int = 1,
+    val baseSalary: Double = 210000.0,      // e.g. 21 man = 210000 JPY
+    val attendanceBonus: Double = 20000.0,  // e.g. 2 man = 20000 JPY
+    val totalWorkDaysYear: Double = 250.0,  // Tổng số ngày làm việc trong năm
+    val standardHoursDay: Double = 7.75     // Số giờ làm việc tiêu chuẩn một ngày
+)

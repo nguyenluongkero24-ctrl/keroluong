@@ -1,0 +1,6 @@
+{
+  "name": "Lịch & Lương",
+  "description": "Ứng dụng quản lý lịch làm việc và tính lương cá nhân.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

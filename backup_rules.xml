@@ -1,0 +1,670 @@
+package com.example.ui.viewmodel
+
+import android.app.Application
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.example.data.database.AppDatabase
+import com.example.data.model.SalarySettings
+import com.example.data.model.WorkEntry
+import android.util.Log
+import com.example.data.repository.SalaryRepository
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import java.text.SimpleDateFormat
+import java.util.*
+
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+class SalaryViewModel(
+    application: Application,
+    private val repository: SalaryRepository
+) : AndroidViewModel(application) {
+
+    // Helper formats
+    private val monthFormat = SimpleDateFormat("yyyy-MM", Locale.getDefault())
+    private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+
+    // UI state for actively viewed Year & Month
+    private val _calendarDate = MutableStateFlow(Calendar.getInstance())
+    val calendarMonthStr: StateFlow<String> = _calendarDate.map { cal ->
+        monthFormat.format(cal.time)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), monthFormat.format(Date()))
+
+    // Active selected date for editing work log (defaults to today)
+    private val _selectedDateStr = MutableStateFlow(dateFormat.format(Date()))
+    val selectedDateStr: StateFlow<String> = _selectedDateStr.asStateFlow()
+
+    // Salary base settings (from Database)
+    val salarySettings: StateFlow<SalarySettings> = repository.settingsFlow
+        .map { it ?: SalarySettings() }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = SalarySettings()
+        )
+
+    // Work entries for the selected month
+    val currentMonthEntries: StateFlow<List<WorkEntry>> = calendarMonthStr
+        .flatMapLatest { month ->
+            repository.getWorkEntriesForMonth(month)
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    // Flow of all Overridden Monthly Attendance Bonuses
+    val allMonthlyOverrides: StateFlow<List<com.example.data.model.MonthlyOverride>> = repository.allMonthlyOverridesFlow
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    // Selected day's editing work entry state
+    var editWorkContent by mutableStateOf("")
+    var editStartTime by mutableStateOf("")
+    var editEndTime by mutableStateOf("")
+    var editOvertimeHours by mutableStateOf("")
+    var editIsOffDay by mutableStateOf(false)
+
+    // Settings editing states
+    var editBaseSalary by mutableStateOf("210000") // 21 man
+    var editAttendanceBonus by mutableStateOf("20000") // 2 man
+    var editTotalWorkDaysYear by mutableStateOf("250") // 250 days standard
+    var editStandardHoursDay by mutableStateOf("7.75") // 7.75 hours standard
+
+    // Show setting save feedback
+    var settingsSavedStatus by mutableStateOf(false)
+
+    // --- Firebase Auth & Firestore Synchronization States ---
+    val auth: FirebaseAuth? by lazy {
+        try {
+            FirebaseAuth.getInstance()
+        } catch (e: Exception) {
+            Log.e("Firebase", "Failed to get FirebaseAuth instance: ${e.message}")
+            null
+        }
+    }
+
+    val firestore: FirebaseFirestore? by lazy {
+        try {
+            FirebaseFirestore.getInstance()
+        } catch (e: Exception) {
+            Log.e("Firebase", "Failed to get FirebaseFirestore instance: ${e.message}")
+            null
+        }
+    }
+
+    private val _currentUser = MutableStateFlow<FirebaseUser?>(null)
+    val currentUser: StateFlow<FirebaseUser?> = _currentUser.asStateFlow()
+
+    var authEmail by mutableStateOf("")
+    var authPassword by mutableStateOf("")
+    var isRegistering by mutableStateOf(false)
+    var authErrorMessage by mutableStateOf<String?>(null)
+    var isAuthLoading by mutableStateOf(false)
+    var isSyncing by mutableStateOf(false)
+    var lastSyncTime by mutableStateOf<String?>(null)
+
+    init {
+        try {
+            val a = auth
+            if (a != null) {
+                _currentUser.value = a.currentUser
+                a.addAuthStateListener { firebaseAuth ->
+                    val prevUser = _currentUser.value
+                    val newUser = firebaseAuth.currentUser
+                    _currentUser.value = newUser
+                    
+                    // Auto sync-down when client connects or transitions to logged-in user
+                    if (newUser != null && prevUser?.uid != newUser.uid) {
+                        syncData()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("Firebase", "Error in Auth State Listener initialization: ${e.message}")
+        }
+
+        // Initialize settings fields when settings are loaded from DB
+        viewModelScope.launch {
+            val settings = repository.getSettingsDirect()
+            editBaseSalary = if (settings.baseSalary == 0.0) "" else settings.baseSalary.toInt().toString()
+            editAttendanceBonus = if (settings.attendanceBonus == 0.0) "" else settings.attendanceBonus.toInt().toString()
+            editTotalWorkDaysYear = if (settings.totalWorkDaysYear == 0.0) "250" else if (settings.totalWorkDaysYear % 1.0 == 0.0) settings.totalWorkDaysYear.toInt().toString() else settings.totalWorkDaysYear.toString()
+            editStandardHoursDay = if (settings.standardHoursDay == 0.0) "7.75" else settings.standardHoursDay.toString()
+            
+            // Also load today's entry
+            selectDate(_selectedDateStr.value)
+        }
+    }
+
+    // --- Firebase Authentication Methods ---
+    fun loginWithEmail(onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = {}) {
+        val a = auth ?: run {
+            authErrorMessage = "Firebase không khả dụng."
+            onFailure(authErrorMessage!!)
+            return
+        }
+        if (authEmail.isBlank() || authPassword.isBlank()) {
+            authErrorMessage = "Vui lòng nhập đầy đủ email và mật khẩu."
+            return
+        }
+        isAuthLoading = true
+        authErrorMessage = null
+        a.signInWithEmailAndPassword(authEmail.trim(), authPassword)
+            .addOnCompleteListener { task ->
+                isAuthLoading = false
+                if (task.isSuccessful) {
+                    authErrorMessage = null
+                    onSuccess()
+                } else {
+                    authErrorMessage = task.exception?.localizedMessage ?: "Đăng nhập thất bại"
+                    onFailure(authErrorMessage!!)
+                }
+            }
+    }
+
+    fun signUpWithEmail(onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = {}) {
+        val a = auth ?: run {
+            authErrorMessage = "Firebase không khả dụng."
+            onFailure(authErrorMessage!!)
+            return
+        }
+        if (authEmail.isBlank() || authPassword.isBlank()) {
+            authErrorMessage = "Vui lòng nhập đầy đủ email và mật khẩu."
+            return
+        }
+        isAuthLoading = true
+        authErrorMessage = null
+        a.createUserWithEmailAndPassword(authEmail.trim(), authPassword)
+            .addOnCompleteListener { task ->
+                isAuthLoading = false
+                if (task.isSuccessful) {
+                    authErrorMessage = null
+                    onSuccess()
+                } else {
+                    authErrorMessage = task.exception?.localizedMessage ?: "Đăng ký thất bại"
+                    onFailure(authErrorMessage!!)
+                }
+            }
+    }
+
+    fun loginWithCredentials(email: String, password: String, onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = {}) {
+        val a = auth ?: run {
+            authErrorMessage = "Firebase không khả dụng."
+            onFailure(authErrorMessage!!)
+            return
+        }
+        isAuthLoading = true
+        authErrorMessage = null
+        a.signInWithEmailAndPassword(email.trim(), password)
+            .addOnCompleteListener { task ->
+                isAuthLoading = false
+                if (task.isSuccessful) {
+                    authErrorMessage = null
+                    onSuccess()
+                } else {
+                    authErrorMessage = task.exception?.localizedMessage ?: "Đăng nhập thất bại"
+                    onFailure(authErrorMessage!!)
+                }
+            }
+    }
+
+    fun signUpWithCredentials(email: String, password: String, onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = {}) {
+        val a = auth ?: run {
+            authErrorMessage = "Firebase không khả dụng."
+            onFailure(authErrorMessage!!)
+            return
+        }
+        isAuthLoading = true
+        authErrorMessage = null
+        a.createUserWithEmailAndPassword(email.trim(), password)
+            .addOnCompleteListener { task ->
+                isAuthLoading = false
+                if (task.isSuccessful) {
+                    authErrorMessage = null
+                    onSuccess()
+                } else {
+                    authErrorMessage = task.exception?.localizedMessage ?: "Đăng ký thất bại"
+                    onFailure(authErrorMessage!!)
+                }
+            }
+    }
+
+    fun signInWithGoogleToken(idToken: String, onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = {}) {
+        val a = auth ?: run {
+            authErrorMessage = "Firebase không khả dụng."
+            onFailure(authErrorMessage!!)
+            return
+        }
+        isAuthLoading = true
+        authErrorMessage = null
+        val credential = com.google.firebase.auth.GoogleAuthProvider.getCredential(idToken, null)
+        a.signInWithCredential(credential)
+            .addOnCompleteListener { task ->
+                isAuthLoading = false
+                if (task.isSuccessful) {
+                    authErrorMessage = null
+                    onSuccess()
+                } else {
+                    authErrorMessage = task.exception?.localizedMessage ?: "Lỗi đăng nhập qua Google."
+                    onFailure(authErrorMessage!!)
+                }
+            }
+    }
+
+    fun signOut() {
+        try {
+            auth?.signOut()
+        } catch (e: Exception) {
+            Log.e("Firebase", "Failed to sign out: ${e.message}")
+        }
+        _currentUser.value = null
+        lastSyncTime = null
+    }
+
+    // --- Firebase real-time sync / saveAttendance implementation ---
+    fun saveAttendance(entry: WorkEntry) {
+        val user = auth?.currentUser ?: return
+        val db = firestore ?: return
+        val userId = user.uid
+        val dateId = entry.dateString
+
+        val recordMap = hashMapOf(
+            "dateString" to entry.dateString,
+            "workContent" to entry.workContent,
+            "startTime" to entry.startTime,
+            "endTime" to entry.endTime,
+            "overtimeHours" to entry.overtimeHours,
+            "isOffDay" to entry.isOffDay,
+            "updatedAt" to System.currentTimeMillis()
+        )
+
+        // Store standard layout: users/{userId}/records/{date_id}
+        db.collection("users")
+            .document(userId)
+            .collection("records")
+            .document(dateId)
+            .set(recordMap, SetOptions.merge())
+            .addOnSuccessListener {
+                Log.d("FirebaseSync", "Synced WorkEntry for: $dateId to cloud")
+            }
+            .addOnFailureListener { e ->
+                Log.e("FirebaseSync", "Failed sync for: $dateId. Error: ${e.message}")
+            }
+    }
+
+    // Sync all Cloud Data to local Room database (Bi-directional fallback)
+    fun syncData(onComplete: (Boolean) -> Unit = {}) {
+        val user = auth?.currentUser ?: run {
+            onComplete(false)
+            return
+        }
+        val db = firestore ?: run {
+            onComplete(false)
+            return
+        }
+        val userId = user.uid
+        isSyncing = true
+
+        // 1. Pull work records from users/{userId}/records/
+        db.collection("users")
+            .document(userId)
+            .collection("records")
+            .get()
+            .addOnSuccessListener { querySnapshot ->
+                viewModelScope.launch {
+                    val cloudEntries = querySnapshot.documents.mapNotNull { doc ->
+                        val dateString = doc.id
+                        val workContent = doc.getString("workContent") ?: ""
+                        val startTime = doc.getString("startTime") ?: ""
+                        val endTime = doc.getString("endTime") ?: ""
+                        val overtimeHours = doc.getDouble("overtimeHours") ?: 0.0
+                        val isOffDay = doc.getBoolean("isOffDay") ?: false
+                        WorkEntry(
+                            dateString = dateString,
+                            workContent = workContent,
+                            startTime = startTime,
+                            endTime = endTime,
+                            overtimeHours = overtimeHours,
+                            isOffDay = isOffDay
+                        )
+                    }
+
+                    // 2. Pull settings from users/{userId}/settings/salary_settings
+                    db.collection("users")
+                        .document(userId)
+                        .collection("settings")
+                        .document("salary_settings")
+                        .get()
+                        .addOnSuccessListener { settingsDoc ->
+                            viewModelScope.launch {
+                                val cloudSettings = if (settingsDoc.exists()) {
+                                    SalarySettings(
+                                        id = 1,
+                                        baseSalary = settingsDoc.getDouble("baseSalary") ?: 210000.0,
+                                        attendanceBonus = settingsDoc.getDouble("attendanceBonus") ?: 20000.0,
+                                        totalWorkDaysYear = settingsDoc.getDouble("totalWorkDaysYear") ?: 250.0,
+                                        standardHoursDay = settingsDoc.getDouble("standardHoursDay") ?: 7.75
+                                    )
+                                } else {
+                                    null
+                                }
+
+                                // 3. Pull monthly overrides from users/{userId}/overrides
+                                db.collection("users")
+                                    .document(userId)
+                                    .collection("overrides")
+                                    .get()
+                                    .addOnSuccessListener { overridesSnapshot ->
+                                        val cloudOverrides = overridesSnapshot.documents.mapNotNull { overrideDoc ->
+                                            val monthStr = overrideDoc.id
+                                            val amount = overrideDoc.getDouble("overriddenAttendanceBonus") ?: return@mapNotNull null
+                                            com.example.data.model.MonthlyOverride(monthStr, amount)
+                                        }
+
+                                        viewModelScope.launch {
+                                            // Perform complete atomic database restoration locally
+                                            repository.restoreDatabase(
+                                                settings = cloudSettings,
+                                                workEntries = cloudEntries,
+                                                monthlyOverrides = cloudOverrides
+                                            )
+
+                                            // Re-initialize ViewModel editing fields with newly pulled properties
+                                            val currentSettings = repository.getSettingsDirect()
+                                            editBaseSalary = if (currentSettings.baseSalary == 0.0) "" else currentSettings.baseSalary.toInt().toString()
+                                            editAttendanceBonus = if (currentSettings.attendanceBonus == 0.0) "" else currentSettings.attendanceBonus.toInt().toString()
+                                            editTotalWorkDaysYear = if (currentSettings.totalWorkDaysYear % 1.0 == 0.0) currentSettings.totalWorkDaysYear.toInt().toString() else currentSettings.totalWorkDaysYear.toString()
+                                            editStandardHoursDay = currentSettings.standardHoursDay.toString()
+
+                                            selectDate(_selectedDateStr.value)
+
+                                            val nowStr = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date())
+                                            lastSyncTime = "Đồng bộ: $nowStr"
+                                            isSyncing = false
+                                            onComplete(true)
+                                        }
+                                    }
+                                    .addOnFailureListener {
+                                        isSyncing = false
+                                        onComplete(false)
+                                    }
+                            }
+                        }
+                        .addOnFailureListener {
+                            isSyncing = false
+                            onComplete(false)
+                        }
+                }
+            }
+            .addOnFailureListener {
+                isSyncing = false
+                onComplete(false)
+            }
+    }
+
+    // Navigation and Calendar
+    fun previousMonth() {
+        val currentCal = _calendarDate.value.clone() as Calendar
+        currentCal.add(Calendar.MONTH, -1)
+        _calendarDate.value = currentCal
+    }
+
+    fun nextMonth() {
+        val currentCal = _calendarDate.value.clone() as Calendar
+        currentCal.add(Calendar.MONTH, 1)
+        _calendarDate.value = currentCal
+    }
+
+    // Set active month and year directly
+    fun setDate(date: Date) {
+        val cal = Calendar.getInstance()
+        cal.time = date
+        _calendarDate.value = cal
+    }
+
+    // Select date for editing
+    fun selectDate(dateStr: String) {
+        _selectedDateStr.value = dateStr
+        viewModelScope.launch {
+            val entry = repository.getWorkEntryByDate(dateStr)
+            editWorkContent = entry.workContent
+            editStartTime = entry.startTime
+            editEndTime = entry.endTime
+            editOvertimeHours = if (entry.overtimeHours == 0.0) "" else if (entry.overtimeHours % 1.0 == 0.0) entry.overtimeHours.toInt().toString() else entry.overtimeHours.toString()
+            editIsOffDay = entry.isOffDay
+        }
+    }
+
+    // Auto-save Work Entry to Room & Real-time Cloud Sync
+    fun saveWorkEntry() {
+        viewModelScope.launch {
+            val otHours = editOvertimeHours.toDoubleOrNull() ?: 0.0
+            val entry = WorkEntry(
+                dateString = _selectedDateStr.value,
+                workContent = editWorkContent,
+                startTime = editStartTime,
+                endTime = editEndTime,
+                overtimeHours = otHours,
+                isOffDay = editIsOffDay
+            )
+            repository.saveWorkEntry(entry)
+            
+            // Sync to Firebase in real-time
+            if (auth?.currentUser != null) {
+                saveAttendance(entry)
+            }
+        }
+    }
+
+    // Auto-save State triggers from UI (on-change)
+    fun updateWorkContent(value: String) {
+        editWorkContent = value
+        saveWorkEntry()
+    }
+
+    fun updateStartTime(value: String) {
+        editStartTime = value
+        saveWorkEntry()
+    }
+
+    fun updateEndTime(value: String) {
+        editEndTime = value
+        saveWorkEntry()
+    }
+
+    fun updateOvertimeHours(value: String) {
+        editOvertimeHours = value
+        saveWorkEntry()
+    }
+
+    fun updateIsOffDay(value: Boolean) {
+        editIsOffDay = value
+        saveWorkEntry()
+    }
+
+    // Delete active day work entry
+    fun clearOrDeleteWorkEntry() {
+        viewModelScope.launch {
+            val dateStr = _selectedDateStr.value
+            repository.deleteWorkEntryByDate(dateStr)
+            editWorkContent = ""
+            editStartTime = ""
+            editEndTime = ""
+            editOvertimeHours = ""
+            editIsOffDay = false
+            
+            // Sync deletion to cloud
+            val user = auth?.currentUser
+            val db = firestore
+            if (user != null && db != null) {
+                db.collection("users")
+                    .document(user.uid)
+                    .collection("records")
+                    .document(dateStr)
+                    .delete()
+                    .addOnSuccessListener {
+                        Log.d("FirebaseSync", "Deleted record on Cloud for date: $dateStr")
+                    }
+            }
+        }
+    }
+
+    // Save configurations automatically to Room
+    fun saveSettings() {
+        viewModelScope.launch {
+            val baseSal = editBaseSalary.toDoubleOrNull() ?: 0.0
+            val attBonus = editAttendanceBonus.toDoubleOrNull() ?: 0.0
+            val daysYear = editTotalWorkDaysYear.toDoubleOrNull() ?: 250.0
+            val hoursDay = editStandardHoursDay.toDoubleOrNull() ?: 7.75
+
+            val config = SalarySettings(
+                id = 1,
+                baseSalary = baseSal,
+                attendanceBonus = attBonus,
+                totalWorkDaysYear = daysYear,
+                standardHoursDay = hoursDay
+            )
+            repository.saveSettings(config)
+            settingsSavedStatus = true
+
+            // Sync settings to Firebase
+            val user = auth?.currentUser
+            val db = firestore
+            if (user != null && db != null) {
+                val settingsMap = hashMapOf(
+                    "baseSalary" to baseSal,
+                    "attendanceBonus" to attBonus,
+                    "totalWorkDaysYear" to daysYear,
+                    "standardHoursDay" to hoursDay,
+                    "updatedAt" to System.currentTimeMillis()
+                )
+                db.collection("users")
+                    .document(user.uid)
+                    .collection("settings")
+                    .document("salary_settings")
+                    .set(settingsMap, SetOptions.merge())
+            }
+        }
+    }
+
+    // Save settings value from UI (on-change auto save)
+    fun updateBaseSalary(value: String) {
+        editBaseSalary = value
+        saveSettings()
+    }
+
+    fun updateAttendanceBonus(value: String) {
+        editAttendanceBonus = value
+        saveSettings()
+    }
+
+    fun updateTotalWorkDaysYear(value: String) {
+        editTotalWorkDaysYear = value
+        saveSettings()
+    }
+
+    fun updateStandardHoursDay(value: String) {
+        editStandardHoursDay = value
+        saveSettings()
+    }
+
+    // Update single-month overridden attendance bonus (on-change)
+    fun updateMonthlyAttendanceBonusOverride(monthStr: String, amount: Double) {
+        viewModelScope.launch {
+            val override = com.example.data.model.MonthlyOverride(monthStr = monthStr, overriddenAttendanceBonus = amount)
+            repository.saveMonthlyOverride(override)
+
+            // Sync override to Firebase
+            val user = auth?.currentUser
+            val db = firestore
+            if (user != null && db != null) {
+                val overrideMap = hashMapOf(
+                    "overriddenAttendanceBonus" to amount,
+                    "updatedAt" to System.currentTimeMillis()
+                )
+                db.collection("users")
+                    .document(user.uid)
+                    .collection("overrides")
+                    .document(monthStr)
+                    .set(overrideMap, SetOptions.merge())
+            }
+        }
+    }
+
+
+
+    // Helper metadata for selected month
+    fun getCalendarGridData(): List<CalendarDay> {
+        val currentCal = _calendarDate.value.clone() as Calendar
+        currentCal.set(Calendar.DAY_OF_MONTH, 1)
+
+        val dayOfWeekOfFirst = currentCal.get(Calendar.DAY_OF_WEEK) // 1 = Sunday, 2 = Monday, ...
+        val daysInMonth = currentCal.getActualMaximum(Calendar.DAY_OF_MONTH)
+
+        // Convert dayOfWeek to 0-indexed Monday to Sunday:
+        // Java Calendar: Sun=1, Mon=2, Tue=3, Wed=4, Thu=5, Fri=6, Sat=7
+        // Monday-first sorting: Mon=0, Tue=1, Wed=2, Thu=3, Fri=4, Sat=5, Sun=6
+        val prefixEmptyCells = when (dayOfWeekOfFirst) {
+            Calendar.MONDAY -> 0
+            Calendar.TUESDAY -> 1
+            Calendar.WEDNESDAY -> 2
+            Calendar.THURSDAY -> 3
+            Calendar.FRIDAY -> 4
+            Calendar.SATURDAY -> 5
+            Calendar.SUNDAY -> 6
+            else -> 0
+        }
+
+        val list = mutableListOf<CalendarDay>()
+        // Add padding days from the previous month for proper alignments
+        for (i in 0 until prefixEmptyCells) {
+            list.add(CalendarDay(dateString = "", dayNumber = 0, isCurrentMonth = false))
+        }
+
+        // Add actual days of the month
+        val baseYear = currentCal.get(Calendar.YEAR)
+        val baseMonth = currentCal.get(Calendar.MONTH) // 0-indexed
+        for (day in 1..daysInMonth) {
+            val dateCal = Calendar.getInstance()
+            dateCal.set(baseYear, baseMonth, day)
+            val dateStr = dateFormat.format(dateCal.time)
+            list.add(CalendarDay(dateString = dateStr, dayNumber = day, isCurrentMonth = true))
+        }
+
+        return list
+    }
+
+    // Factory Class for robust creation
+    class Factory(private val application: Application) : ViewModelProvider.Factory {
+        override fun <T : ViewModel> create(modelClass: Class<T>): T {
+            if (modelClass.isAssignableFrom(SalaryViewModel::class.java)) {
+                @Suppress("UNCHECKED_CAST")
+                val db = AppDatabase.getDatabase(application)
+                val repository = SalaryRepository(db.salaryDao())
+                return SalaryViewModel(application, repository) as T
+            }
+            throw IllegalArgumentException("Unknown ViewModel class")
+        }
+    }
+}
+
+data class CalendarDay(
+    val dateString: String,
+    val dayNumber: Int,
+    val isCurrentMonth: Boolean
+)

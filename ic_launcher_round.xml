@@ -1,0 +1,88 @@
+package com.example.data.repository
+
+import com.example.data.dao.SalaryDao
+import com.example.data.model.MonthlyOverride
+import com.example.data.model.SalarySettings
+import com.example.data.model.WorkEntry
+import kotlinx.coroutines.flow.Flow
+
+class SalaryRepository(private val salaryDao: SalaryDao) {
+
+    // Fetch entries belonging to a given month formatted as "yyyy-MM" (using LIKE "yyyy-MM-%")
+    fun getWorkEntriesForMonth(month: String): Flow<List<WorkEntry>> {
+        val monthPattern = "$month-%"
+        return salaryDao.getWorkEntriesForMonth(monthPattern)
+    }
+
+    // Get all work entries
+    val allWorkEntries: Flow<List<WorkEntry>> = salaryDao.getAllWorkEntries()
+
+    // Get settings as Flow for real-time calculation update
+    val settingsFlow: Flow<SalarySettings?> = salaryDao.getSettingsFlow()
+
+    // Get direct configurations
+    suspend fun getSettingsDirect(): SalarySettings {
+        return salaryDao.getSettingsDirect() ?: SalarySettings()
+    }
+
+    // Get work entry for concrete date (e.g. "2026-05-21")
+    suspend fun getWorkEntryByDate(dateStr: String): WorkEntry {
+        return salaryDao.getWorkEntryByDate(dateStr) ?: WorkEntry(dateString = dateStr)
+    }
+
+    // Insert work log
+    suspend fun saveWorkEntry(entry: WorkEntry) {
+        salaryDao.insertOrUpdateWorkEntry(entry)
+    }
+
+    // Delete work log
+    suspend fun deleteWorkEntryByDate(dateStr: String) {
+        salaryDao.deleteWorkEntryByDate(dateStr)
+    }
+
+    // Save configurations
+    suspend fun saveSettings(settings: SalarySettings) {
+        salaryDao.insertOrUpdateSettings(settings)
+    }
+
+    // --- Monthly Overrides ---
+    fun getMonthlyOverrideFlow(month: String): Flow<MonthlyOverride?> {
+        return salaryDao.getMonthlyOverrideFlow(month)
+    }
+
+    suspend fun getMonthlyOverrideDirect(month: String): MonthlyOverride? {
+        return salaryDao.getMonthlyOverrideDirect(month)
+    }
+
+    val allMonthlyOverridesFlow: Flow<List<MonthlyOverride>> = salaryDao.getAllMonthlyOverridesFlow()
+
+    suspend fun getAllMonthlyOverridesDirect(): List<MonthlyOverride> {
+        return salaryDao.getAllMonthlyOverridesDirect()
+    }
+
+    suspend fun getAllWorkEntriesDirect(): List<WorkEntry> {
+        return salaryDao.getAllWorkEntriesDirect()
+    }
+
+    suspend fun restoreDatabase(
+        settings: SalarySettings?,
+        workEntries: List<WorkEntry>,
+        monthlyOverrides: List<MonthlyOverride>
+    ) {
+        salaryDao.deleteAllWorkEntries()
+        salaryDao.deleteAllMonthlyOverrides()
+        if (settings != null) {
+            salaryDao.insertOrUpdateSettings(settings)
+        }
+        if (workEntries.isNotEmpty()) {
+            salaryDao.insertWorkEntries(workEntries)
+        }
+        if (monthlyOverrides.isNotEmpty()) {
+            salaryDao.insertMonthlyOverrides(monthlyOverrides)
+        }
+    }
+
+    suspend fun saveMonthlyOverride(override: MonthlyOverride) {
+        salaryDao.insertOrUpdateMonthlyOverride(override)
+    }
+}
